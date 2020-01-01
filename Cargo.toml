@@ -15,3 +15,9 @@ prometheus = "0.7.0"
 rumble = { git = "https://github.com/mwylde/rumble" }
 ruuvi-sensor-protocol = { git = "https://github.com/henkkuli/ruuvi-sensor-protocol-rs" }
 tokio = { version = "0.2", features = ["full"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
