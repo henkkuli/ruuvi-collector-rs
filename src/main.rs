@@ -3,6 +3,9 @@ use crate::ruuvi_gauges::RuuviGauges;
 use crate::ruuvi_listener::listen_for_tags;
 use prometheus::Registry;
 
+#[macro_use]
+extern crate log;
+
 mod metrics_server;
 mod ruuvi_gauges;
 mod ruuvi_listener;
@@ -10,6 +13,8 @@ mod watchdog;
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     // Setup sensor metrics
     let registry = Registry::new();
     let gauges = RuuviGauges::create_and_register(&registry);
@@ -21,6 +26,6 @@ async fn main() {
 
     // Start serving metrics
     if let Err(e) = create_metrics_server(registry).await {
-        eprintln!("server error: {}", e);
+        error!("server error: {}", e);
     }
 }

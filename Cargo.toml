@@ -7,8 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+env_logger = "0.7.1"
 futures = "0.3"
 hyper = "0.13.1"
+log = "0.4.8"
 prometheus = "0.7.0"
 rumble = { git = "https://github.com/mwylde/rumble" }
 ruuvi-sensor-protocol = { git = "https://github.com/henkkuli/ruuvi-sensor-protocol-rs" }

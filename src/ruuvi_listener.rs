@@ -58,7 +58,7 @@ pub async fn listen_for_tags(gauges: RuuviGauges) {
     let tx = RefCell::new(tx);
     central.on_event(Box::new(move |event| {
         if let Err(e) = tx.borrow_mut().try_send(event) {
-            println!("Failed to send BLE event for handling: {}", e);
+            error!("Failed to send BLE event for handling: {}", e);
         }
     }));
 

@@ -93,7 +93,7 @@ impl RuuviGauges {
             if let Some(watchdog) = watchdog {
                 watchdog
             } else {
-                println!("Found {}", address);
+                info!("Found {}", address);
 
                 // Create new watchdog
                 let watchdog = Watchdog::new(Duration::from_secs(5));
@@ -108,7 +108,7 @@ impl RuuviGauges {
                         watchdog.wait().await;
                         let watchdogs = &mut watchdogs.lock().await;
                         watchdogs.remove(&saved_address);
-                        println!("Lost {}", address);
+                        info!("Lost {}", address);
 
                         me.remove_sensor_values(address);
                     });
@@ -163,7 +163,7 @@ impl RuuviGauges {
             .and_then(|_| self.movement_counter.remove_label_values(&[&address]))
             .and_then(|_| self.sequence_number.remove_label_values(&[&address]))
         {
-            println!("Failed to remove sensor {} from the export", address);
+            error!("Failed to remove sensor {} from the export", address);
         }
     }
 }
