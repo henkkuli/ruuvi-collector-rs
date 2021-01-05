@@ -5,7 +5,8 @@ use hyper::{
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::{convert::Infallible, net::SocketAddr};
 
-pub async fn create_metrics_server(registry: Registry) -> Result<(), hyper::error::Error> {
+/// Starts a server at port 8000 for exposing the Prometheus metrics.
+pub async fn serve_metrics(registry: Registry) -> Result<(), hyper::Error> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
 
     let make_rvc = make_service_fn(|_conn| {

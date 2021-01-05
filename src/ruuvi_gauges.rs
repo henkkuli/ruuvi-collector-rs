@@ -1,29 +1,33 @@
-use crate::watchdog::Watchdog;
+use btleplug::api::BDAddr;
 use prometheus::{GaugeVec, IntGaugeVec, Opts, Registry};
-use rumble::api::BDAddr;
 use ruuvi_sensor_protocol::{
     BatteryPotential, Humidity, MeasurementSequenceNumber, MovementCounter, Pressure, SensorValues,
     Temperature,
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
+use std::{collections::HashMap, sync::Arc, sync::Mutex, time::Duration};
+use tokio::time::{interval, Instant};
+
+/// Run cleanup job for old sensors every second.
+const CLEANUP_PERIOD: Duration = Duration::from_secs(1);
+/// Consider tags stale and lost if they haven't been sen for 10 seconds.
+const STALE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct RuuviGauges {
-    watchdogs: Arc<Mutex<HashMap<BDAddr, Watchdog>>>,
     temperature: GaugeVec,
     humidity: GaugeVec,
     pressure: GaugeVec,
     battery_potential: GaugeVec,
     movement_counter: IntGaugeVec,
     sequence_number: IntGaugeVec,
+    last_seen: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl RuuviGauges {
+    /// Creates new gauges and registers them for the given registry.
     pub fn create_and_register(registry: &Registry) -> Self {
         // Fill in sensor metrics
         let gauges = RuuviGauges {
-            watchdogs: Arc::new(Mutex::new(HashMap::new())),
             temperature: GaugeVec::new(
                 Opts::new("ruuvi_temperature", "temperature reported by ruuvi sensor"),
                 &["address"],
@@ -63,6 +67,7 @@ impl RuuviGauges {
                 &["address"],
             )
             .unwrap(),
+            last_seen: Default::default(),
         };
         // Register all of them
         registry
@@ -83,87 +88,101 @@ impl RuuviGauges {
         registry
             .register(Box::new(gauges.sequence_number.clone()))
             .unwrap();
+
+        // A periodic job for removing too old sensor readings.
+        // XXX: This job is not removed if the gauges gets dropped.
+        tokio::spawn({
+            let gauges = gauges.clone();
+            async move {
+                let mut interval = interval(CLEANUP_PERIOD);
+                loop {
+                    interval.tick().await;
+                    let mut last_seen = gauges.last_seen.lock().unwrap();
+                    let now = Instant::now();
+                    last_seen.retain(|address, &mut value| {
+                        if now - value < STALE_TIMEOUT {
+                            true
+                        } else {
+                            gauges.remove_sensor_values(address);
+                            false
+                        }
+                    });
+                }
+            }
+        });
+
         gauges
     }
 
-    pub async fn update_sensor_values(&self, address: BDAddr, values: SensorValues) {
-        let watchdogs = &mut self.watchdogs.lock().await;
-        let watchdog = {
-            let watchdog = watchdogs.get(&address);
-            if let Some(watchdog) = watchdog {
-                watchdog
-            } else {
-                info!("Found {}", address);
-
-                // Create new watchdog
-                let watchdog = Watchdog::new(Duration::from_secs(5));
-                watchdogs.insert(address.clone(), watchdog.clone());
-
-                // Implement removing functionality
-                {
-                    let saved_address = address.clone();
-                    let watchdogs = self.watchdogs.clone();
-                    let me = self.clone();
-                    tokio::spawn(async move {
-                        watchdog.wait().await;
-                        let watchdogs = &mut watchdogs.lock().await;
-                        watchdogs.remove(&saved_address);
-                        info!("Lost {}", address);
-
-                        me.remove_sensor_values(address);
-                    });
-                }
-                watchdogs.get(&address).unwrap()
-            }
-        };
-        watchdog.pet().await;
-
+    /// Updates the exposed sensor values for the given sensor.
+    pub fn update_sensor_values(&self, address: BDAddr, values: SensorValues) {
         let address = format!("{}", address);
+
+        // Update last seen status
+        {
+            let mut last_seen = self.last_seen.lock().unwrap();
+            last_seen.insert(address.clone(), Instant::now());
+        }
+
+        // Update each sensor reading, or remove if the value couldn't be parsed.
         if let Some(temperature) = values.temperature_as_millicelsius() {
             self.temperature
                 .with_label_values(&[&address])
                 .set(f64::from(temperature) * 1e-3);
+        } else {
+            let _ = self.temperature.remove_label_values(&[&address]);
         }
+
         if let Some(humidity) = values.humidity_as_ppm() {
             self.humidity
                 .with_label_values(&[&address])
                 .set(f64::from(humidity) * 1e-4);
+        } else {
+            let _ = self.humidity.remove_label_values(&[&address]);
         }
+
         if let Some(pressure) = values.pressure_as_pascals() {
             self.pressure
                 .with_label_values(&[&address])
                 .set(f64::from(pressure) * 1e-3);
+        } else {
+            let _ = self.pressure.remove_label_values(&[&address]);
         }
+
         if let Some(potential) = values.battery_potential_as_millivolts() {
             self.battery_potential
                 .with_label_values(&[&address])
                 .set(f64::from(potential));
+        } else {
+            let _ = self.battery_potential.remove_label_values(&[&address]);
         }
+
         if let Some(counter) = values.movement_counter() {
             self.movement_counter
                 .with_label_values(&[&address])
                 .set(counter.into());
+        } else {
+            let _ = self.movement_counter.remove_label_values(&[&address]);
         }
+
         if let Some(sequence) = values.measurement_sequence_number() {
             self.sequence_number
                 .with_label_values(&[&address])
                 .set(sequence.into());
+        } else {
+            let _ = self.sequence_number.remove_label_values(&[&address]);
         }
     }
 
-    fn remove_sensor_values(&self, address: BDAddr) {
-        let address = format!("{}", address);
-
-        if let Err(_) = self
-            .temperature
-            .remove_label_values(&[&address])
-            .and_then(|_| self.humidity.remove_label_values(&[&address]))
-            .and_then(|_| self.pressure.remove_label_values(&[&address]))
-            .and_then(|_| self.battery_potential.remove_label_values(&[&address]))
-            .and_then(|_| self.movement_counter.remove_label_values(&[&address]))
-            .and_then(|_| self.sequence_number.remove_label_values(&[&address]))
-        {
-            error!("Failed to remove sensor {} from the export", address);
-        }
+    /// Removes sensor values for the given address from the exposed metrics.
+    fn remove_sensor_values(&self, address: &str) {
+        // Explicitly ignore the removal status. Either the value is removed correctly, or it never existed in the first
+        // place.
+        let _ = self.temperature.remove_label_values(&[&address]);
+        let _ = self.humidity.remove_label_values(&[&address]);
+        let _ = self.pressure.remove_label_values(&[&address]);
+        let _ = self.battery_potential.remove_label_values(&[&address]);
+        let _ = self.movement_counter.remove_label_values(&[&address]);
+        let _ = self.sequence_number.remove_label_values(&[&address]);
     }
 }

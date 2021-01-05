@@ -1,20 +1,20 @@
 [package]
 name = "ruuvi-collector"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Henrik Lievonen"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-env_logger = "0.7.1"
+env_logger = "0.8"
 futures = "0.3"
-hyper = "0.13.1"
-log = "0.4.8"
-prometheus = "0.7.0"
-rumble = { git = "https://github.com/mwylde/rumble" }
-ruuvi-sensor-protocol = { git = "https://github.com/henkkuli/ruuvi-sensor-protocol-rs" }
-tokio = { version = "0.2", features = ["full"] }
+hyper = { version = "0.14", features = ["server", "http1", "runtime"] }
+log = "0.4"
+prometheus = "0.11.0"
+btleplug =  "0.5"
+ruuvi-sensor-protocol = "0.4"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 
 [profile.dev]
 panic = "abort"

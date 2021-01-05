@@ -1,11 +1,16 @@
 use crate::ruuvi_gauges::RuuviGauges;
-use rumble::{
+use btleplug::{
     api::{BDAddr, Central, CentralEvent, Peripheral},
     bluez::{adapter::ConnectedAdapter, manager::Manager},
 };
 use ruuvi_sensor_protocol::SensorValues;
-use std::{cell::RefCell, convert::TryInto, sync::Arc, time::Duration};
+use std::{
+    convert::TryInto,
+    sync::{atomic::Ordering, Arc},
+    thread::spawn,
+};
 
+/// Parses manufacturer-specific data.
 fn parse_manufacturer_data(data: &Vec<u8>) -> Option<SensorValues> {
     if data.len() >= 2 {
         let id = u16::from_le_bytes(data[0..2].try_into().unwrap());
@@ -15,6 +20,7 @@ fn parse_manufacturer_data(data: &Vec<u8>) -> Option<SensorValues> {
     }
 }
 
+/// Handles bluetooth event.
 fn on_event_with_address(
     central: &ConnectedAdapter,
     address: BDAddr,
@@ -28,6 +34,7 @@ fn on_event_with_address(
     .and_then(|data| Some((address, data)))
 }
 
+/// Parses bluetooth event.
 pub fn parse_event(
     central: &ConnectedAdapter,
     event: CentralEvent,
@@ -41,7 +48,8 @@ pub fn parse_event(
     }
 }
 
-pub async fn listen_for_tags(gauges: RuuviGauges) {
+/// Starts for listening for tags.
+pub fn listen_for_tags(gauges: RuuviGauges) {
     // Get a bluetooth adapter and setup it
     let manager = Manager::new().unwrap();
     let adapters = manager.adapters().unwrap();
@@ -49,35 +57,26 @@ pub async fn listen_for_tags(gauges: RuuviGauges) {
     let adapter = manager.down(&adapter).unwrap();
     let adapter = manager.up(&adapter).unwrap();
     let central = Arc::new(adapter.connect().unwrap());
-    central.active(false);
+    central.scan_enabled.store(false, Ordering::SeqCst);
     central.filter_duplicates(false);
 
     // Create a channel between rumble callback events and tokio async handler
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    let receiver = central.event_receiver().unwrap();
 
-    let tx = RefCell::new(tx);
-    central.on_event(Box::new(move |event| {
-        if let Err(e) = tx.borrow_mut().try_send(event) {
-            error!("Failed to send BLE event for handling: {}", e);
-        }
-    }));
-
-    let closure_central = central.clone();
     // Handle ble events from the channel
-    tokio::spawn(async move {
-        loop {
-            if let Some(event) = rx.recv().await {
-                if let Some((address, values)) = parse_event(&closure_central, event) {
-                    gauges.update_sensor_values(address, values).await;
+    spawn({
+        let central = central.clone();
+        move || loop {
+            if let Ok(event) = receiver.recv() {
+                if let Some((address, values)) = parse_event(&central, event) {
+                    gauges.update_sensor_values(address, values);
                 }
+            } else {
+                eprintln!("Error receiving messages");
             }
         }
     });
 
     // Listen for tags
-    loop {
-        central.start_scan().unwrap();
-        tokio::time::delay_for(Duration::from_secs(120)).await;
-        central.stop_scan().unwrap();
-    }
+    central.start_scan().unwrap();
 }
